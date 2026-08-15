@@ -3,6 +3,7 @@ package sse
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -26,37 +27,54 @@ const (
 // SseHandle SSE 服务处理器，与 API 共享 gin.Engine。
 type SseHandle struct {
 	engine    *gin.Engine
+	group     *gin.RouterGroup
 	container ioc.IContainer
 	semaphore chan struct{} // 连接信号量，限制并发连接数
 }
 
-// Middleware 注册 SSE 全局中间件，Middleware() 方法自动完成依赖注入。
+// Middleware 注册 SSE 分组中间件，Middleware() 方法自动完成依赖注入。
 func (f *SseHandle) Middleware(middlewares ...iCoreApi.IMiddleware) iCoreSse.ISseHandle {
 	for _, iMiddleware := range middlewares {
 		f.container.Inject(iMiddleware)
 
 		middlewareValue := iMiddleware.Middleware()
 		if middlewareValue != nil && reflect.TypeOf(middlewareValue).Kind() == reflect.Func {
-			f.engine.Use(middlewareValue.(func(*gin.Context)))
+			f.group.Use(middlewareValue.(func(*gin.Context)))
 		}
 	}
 
 	return f
 }
 
-// Get 注册 SSE 路由。每个连接会创建独立的业务实例，避免并发共享写入。
+// Group 创建 SSE 路由分组，分组内的中间件仅作用于该分组。
+func (f *SseHandle) Group(relativePath string, middlewares ...iCoreApi.IMiddleware) iCoreSse.ISseHandle {
+	group := &SseHandle{
+		engine:    f.engine,
+		group:     f.group.Group(relativePath),
+		container: f.container,
+		semaphore: f.semaphore,
+	}
+	group.Middleware(middlewares...)
+	return group
+}
+
+// Get 注册 SSE 路由（GET 方式，EventSource 标准用法）。
 func (f *SseHandle) Get(apiPath string, sseInstance iCoreSse.ISse) {
+	f.registerSse(apiPath, sseInstance, http.MethodGet)
+}
+
+// Post 注册 SSE 路由（POST 方式，适用于 fetch + ReadableStream 场景）。
+func (f *SseHandle) Post(apiPath string, sseInstance iCoreSse.ISse) {
+	f.registerSse(apiPath, sseInstance, http.MethodPost)
+}
+
+// registerSse 注册 SSE 路由。每个连接会创建独立的业务实例，避免并发共享写入。
+func (f *SseHandle) registerSse(apiPath string, sseInstance iCoreSse.ISse, method string) {
 	// 注入模板实例，仅用于反射获取具体类型
 	f.container.Inject(sseInstance)
 	sseType := reflect.TypeOf(sseInstance).Elem()
 
-	f.engine.GET(apiPath, func(c *gin.Context) {
-		// 1.5 Accept 头校验：缺失 text/event-stream 返回 406
-		if !strings.Contains(c.GetHeader("Accept"), "text/event-stream") {
-			c.String(http.StatusNotAcceptable, "Accept: text/event-stream required")
-			return
-		}
-
+	handler := func(c *gin.Context) {
 		// 1.4 http.Flusher 断言：不支持流式写入返回 500
 		flusher, ok := c.Writer.(http.Flusher)
 		if !ok {
@@ -106,7 +124,16 @@ func (f *SseHandle) Get(apiPath string, sseInstance iCoreSse.ISse) {
 			// 1.6 错误帧使用 JSON 格式，便于客户端区分错误类型
 			writer.writeError(err)
 		}
-	})
+	}
+
+	switch method {
+	case http.MethodGet:
+		f.group.GET(apiPath, handler)
+	case http.MethodPost:
+		f.group.POST(apiPath, handler)
+	default:
+		panic(fmt.Sprintf("无效http请求类型，%s", method))
+	}
 }
 
 // NewSseSvc 创建 SSE 服务处理器。
@@ -116,6 +143,7 @@ func NewSseSvc(engine *gin.Engine, container ioc.IContainer) iCoreSse.ISseHandle
 	}
 	return &SseHandle{
 		engine:    engine,
+		group:     &engine.RouterGroup,
 		container: container,
 		semaphore: make(chan struct{}, defaultMaxConnections),
 	}
