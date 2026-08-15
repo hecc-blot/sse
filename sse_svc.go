@@ -1,19 +1,22 @@
 package sse
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	iCoreApi "github.com/hecc-blot/hecc-blot-core/contract/api"
 	iCoreSse "github.com/hecc-blot/hecc-blot-core/contract/sse"
+	iCoreTrace "github.com/hecc-blot/hecc-blot-core/contract/trace"
 
 	"github.com/hecc-blot/hecc-blot-core/contract/ioc"
+	"github.com/hecc-blot/hecc-blot-core/util"
 	"github.com/gin-gonic/gin"
 )
 
@@ -30,6 +33,22 @@ type SseHandle struct {
 	group     *gin.RouterGroup
 	container ioc.IContainer
 	semaphore chan struct{} // 连接信号量，限制并发连接数
+	traceSvc  iCoreTrace.ITrace
+	stats     *sseStats
+	conns     *connTable
+}
+
+// sseStats SSE 连接统计，分组与根共享同一实例。
+type sseStats struct {
+	active atomic.Int64
+	total  atomic.Int64
+	closed atomic.Int64
+}
+
+// connTable 活跃连接表，分组与根共享，用于优雅关闭通知。
+type connTable struct {
+	mu    sync.Mutex
+	conns map[*sseWriter]struct{}
 }
 
 // Middleware 注册 SSE 分组中间件，Middleware() 方法自动完成依赖注入。
@@ -53,9 +72,35 @@ func (f *SseHandle) Group(relativePath string, middlewares ...iCoreApi.IMiddlewa
 		group:     f.group.Group(relativePath),
 		container: f.container,
 		semaphore: f.semaphore,
+		traceSvc:  f.traceSvc,
+		stats:     f.stats,
+		conns:     f.conns,
 	}
 	group.Middleware(middlewares...)
 	return group
+}
+
+// Stats 返回 SSE 连接统计指标。
+func (f *SseHandle) Stats() iCoreSse.Stats {
+	return iCoreSse.Stats{
+		Active: f.stats.active.Load(),
+		Total:  f.stats.total.Load(),
+		Closed: f.stats.closed.Load(),
+	}
+}
+
+// Shutdown 通知所有活跃连接优雅关闭：发送 shutdown 帧并取消连接。
+func (f *SseHandle) Shutdown() {
+	f.conns.mu.Lock()
+	conns := make([]*sseWriter, 0, len(f.conns.conns))
+	for w := range f.conns.conns {
+		conns = append(conns, w)
+	}
+	f.conns.mu.Unlock()
+
+	for _, w := range conns {
+		w.shutdown()
+	}
 }
 
 // Get 注册 SSE 路由（GET 方式，EventSource 标准用法）。
@@ -91,13 +136,29 @@ func (f *SseHandle) registerSse(apiPath string, sseInstance iCoreSse.ISse, metho
 			return
 		}
 
+		// 2.2 连接统计：连接建立 +1，结束 -1
+		f.stats.total.Add(1)
+		f.stats.active.Add(1)
+		defer func() {
+			f.stats.active.Add(-1)
+			f.stats.closed.Add(1)
+		}()
+
 		// 1.1 实例隔离：每个连接创建独立实例并注入依赖
 		newInstance := reflect.New(sseType).Interface()
 		f.container.Inject(newInstance)
 		sse := newInstance.(iCoreSse.ISse)
 
+		// 5.1 链路追踪：为连接创建 span 并注入上下文
+		ctx := c.Request.Context()
+		if f.traceSvc != nil {
+			var span iCoreTrace.Span
+			ctx, span = f.traceSvc.Start(ctx, "sse.connection", "sse.path", apiPath)
+			defer span.End()
+		}
+
 		// 1.3 心跳：带取消能力的上下文，客户端断开或心跳写入失败时取消
-		ctx, cancel := context.WithCancel(c.Request.Context())
+		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
 		// 设置 SSE 响应头
@@ -115,6 +176,16 @@ func (f *SseHandle) registerSse(apiPath string, sseInstance iCoreSse.ISse, metho
 			ctx:         ctx,
 			cancel:      cancel,
 		}
+
+		// 2.1 注册到活跃连接表，供优雅关闭通知
+		f.conns.mu.Lock()
+		f.conns.conns[writer] = struct{}{}
+		f.conns.mu.Unlock()
+		defer func() {
+			f.conns.mu.Lock()
+			delete(f.conns.conns, writer)
+			f.conns.mu.Unlock()
+		}()
 
 		// 心跳 goroutine：定期发送 comment，写入失败时取消连接
 		go writer.heartbeat()
@@ -136,8 +207,8 @@ func (f *SseHandle) registerSse(apiPath string, sseInstance iCoreSse.ISse, metho
 	}
 }
 
-// NewSseSvc 创建 SSE 服务处理器。
-func NewSseSvc(engine *gin.Engine, container ioc.IContainer) iCoreSse.ISseHandle {
+// NewSseSvc 创建 SSE 服务处理器。traceSvc 可为 nil（不启用链路追踪）。
+func NewSseSvc(engine *gin.Engine, container ioc.IContainer, traceSvc iCoreTrace.ITrace) iCoreSse.ISseHandle {
 	if container == nil {
 		panic("ioc: 注入容器不能为空")
 	}
@@ -145,6 +216,9 @@ func NewSseSvc(engine *gin.Engine, container ioc.IContainer) iCoreSse.ISseHandle
 		engine:    engine,
 		group:     &engine.RouterGroup,
 		container: container,
+		traceSvc:  traceSvc,
+		stats:     &sseStats{},
+		conns:     &connTable{conns: make(map[*sseWriter]struct{})},
 		semaphore: make(chan struct{}, defaultMaxConnections),
 	}
 }
@@ -169,23 +243,15 @@ func (w *sseWriter) LastEventID() string {
 	return w.lastEventID
 }
 
-// write 组装并写入一条 SSE 事件帧。
+// write 组装并写入一条 SSE 事件帧，复用 util.WriteSSE 组装帧。
 func (w *sseWriter) write(id, event, data string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	var buf strings.Builder
-	if id != "" {
-		buf.WriteString("id: " + id + "\n")
+	var buf bytes.Buffer
+	if err := util.WriteSSE(&buf, id, event, data); err != nil {
+		return err
 	}
-	if event != "" {
-		buf.WriteString("event: " + event + "\n")
-	}
-	if data != "" {
-		buf.WriteString("data: " + data + "\n")
-	}
-	buf.WriteString("\n")
-
 	return w.writeRaw(buf.String())
 }
 
@@ -225,4 +291,10 @@ func (w *sseWriter) writeError(err error) {
 		"message": err.Error(),
 	})
 	_ = w.Send("", "error", string(payload))
+}
+
+// shutdown 发送 shutdown 帧并取消连接，通知客户端主动断开。
+func (w *sseWriter) shutdown() {
+	_ = w.Send("", "shutdown", `{"code":"shutdown","message":"server is shutting down"}`)
+	w.cancel()
 }
