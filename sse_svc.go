@@ -12,8 +12,8 @@ import (
 	"time"
 
 	iCoreApi "github.com/hecc-blot/hecc-blot-core/contract/api"
-	iCoreSse "github.com/hecc-blot/hecc-blot-core/contract/sse"
-	iCoreTrace "github.com/hecc-blot/hecc-blot-core/contract/trace"
+	sseContract "github.com/hecc-blot/hecc-blot-sse/contract"
+	"github.com/hecc-blot/hecc-blot-trace/contract"
 
 	"github.com/hecc-blot/hecc-blot-core/contract/ioc"
 	sseutil "github.com/hecc-blot/hecc-blot-sse/util"
@@ -33,7 +33,7 @@ type SseHandle struct {
 	group     *gin.RouterGroup
 	container ioc.IContainer
 	semaphore chan struct{} // 连接信号量，限制并发连接数
-	traceSvc  iCoreTrace.ITrace
+	traceSvc  trace.ITrace
 	stats     *sseStats
 	conns     *connTable
 }
@@ -52,7 +52,7 @@ type connTable struct {
 }
 
 // Middleware 注册 SSE 分组中间件，Middleware() 方法自动完成依赖注入。
-func (f *SseHandle) Middleware(middlewares ...iCoreApi.IMiddleware) iCoreSse.ISseHandle {
+func (f *SseHandle) Middleware(middlewares ...iCoreApi.IMiddleware) sseContract.ISseHandle {
 	for _, iMiddleware := range middlewares {
 		f.container.Inject(iMiddleware)
 
@@ -66,7 +66,7 @@ func (f *SseHandle) Middleware(middlewares ...iCoreApi.IMiddleware) iCoreSse.ISs
 }
 
 // Group 创建 SSE 路由分组，分组内的中间件仅作用于该分组。
-func (f *SseHandle) Group(relativePath string, middlewares ...iCoreApi.IMiddleware) iCoreSse.ISseHandle {
+func (f *SseHandle) Group(relativePath string, middlewares ...iCoreApi.IMiddleware) sseContract.ISseHandle {
 	group := &SseHandle{
 		engine:    f.engine,
 		group:     f.group.Group(relativePath),
@@ -81,8 +81,8 @@ func (f *SseHandle) Group(relativePath string, middlewares ...iCoreApi.IMiddlewa
 }
 
 // Stats 返回 SSE 连接统计指标。
-func (f *SseHandle) Stats() iCoreSse.Stats {
-	return iCoreSse.Stats{
+func (f *SseHandle) Stats() sseContract.Stats {
+	return sseContract.Stats{
 		Active: f.stats.active.Load(),
 		Total:  f.stats.total.Load(),
 		Closed: f.stats.closed.Load(),
@@ -104,17 +104,17 @@ func (f *SseHandle) Shutdown() {
 }
 
 // Get 注册 SSE 路由（GET 方式，EventSource 标准用法）。
-func (f *SseHandle) Get(apiPath string, sseInstance iCoreSse.ISse) {
+func (f *SseHandle) Get(apiPath string, sseInstance sseContract.ISse) {
 	f.registerSse(apiPath, sseInstance, http.MethodGet)
 }
 
 // Post 注册 SSE 路由（POST 方式，适用于 fetch + ReadableStream 场景）。
-func (f *SseHandle) Post(apiPath string, sseInstance iCoreSse.ISse) {
+func (f *SseHandle) Post(apiPath string, sseInstance sseContract.ISse) {
 	f.registerSse(apiPath, sseInstance, http.MethodPost)
 }
 
 // registerSse 注册 SSE 路由。每个连接会创建独立的业务实例，避免并发共享写入。
-func (f *SseHandle) registerSse(apiPath string, sseInstance iCoreSse.ISse, method string) {
+func (f *SseHandle) registerSse(apiPath string, sseInstance sseContract.ISse, method string) {
 	// 注入模板实例，仅用于反射获取具体类型
 	f.container.Inject(sseInstance)
 	sseType := reflect.TypeOf(sseInstance).Elem()
@@ -147,12 +147,12 @@ func (f *SseHandle) registerSse(apiPath string, sseInstance iCoreSse.ISse, metho
 		// 1.1 实例隔离：每个连接创建独立实例并注入依赖
 		newInstance := reflect.New(sseType).Interface()
 		f.container.Inject(newInstance)
-		sse := newInstance.(iCoreSse.ISse)
+		sse := newInstance.(sseContract.ISse)
 
 		// 5.1 链路追踪：为连接创建 span 并注入上下文
 		ctx := c.Request.Context()
 		if f.traceSvc != nil {
-			var span iCoreTrace.Span
+			var span trace.Span
 			ctx, span = f.traceSvc.Start(ctx, "sse.connection", "sse.path", apiPath)
 			defer span.End()
 		}
@@ -208,7 +208,7 @@ func (f *SseHandle) registerSse(apiPath string, sseInstance iCoreSse.ISse, metho
 }
 
 // NewSseSvc 创建 SSE 服务处理器。traceSvc 可为 nil（不启用链路追踪）。
-func NewSseSvc(engine *gin.Engine, container ioc.IContainer, traceSvc iCoreTrace.ITrace) iCoreSse.ISseHandle {
+func NewSseSvc(engine *gin.Engine, container ioc.IContainer, traceSvc trace.ITrace) sseContract.ISseHandle {
 	if container == nil {
 		panic("ioc: 注入容器不能为空")
 	}
