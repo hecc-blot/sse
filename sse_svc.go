@@ -13,7 +13,6 @@ import (
 
 	iCoreApi "github.com/hecc-blot/hecc-blot-core/contract/api"
 	sseContract "github.com/hecc-blot/hecc-blot-sse/contract"
-	"github.com/hecc-blot/hecc-blot-trace/contract"
 
 	"github.com/hecc-blot/hecc-blot-core/contract/ioc"
 	sseutil "github.com/hecc-blot/hecc-blot-sse/util"
@@ -33,7 +32,6 @@ type SseHandle struct {
 	group     *gin.RouterGroup
 	container ioc.IContainer
 	semaphore chan struct{} // 连接信号量，限制并发连接数
-	traceSvc  trace.ITrace
 	stats     *sseStats
 	conns     *connTable
 }
@@ -72,7 +70,6 @@ func (f *SseHandle) Group(relativePath string, middlewares ...iCoreApi.IMiddlewa
 		group:     f.group.Group(relativePath),
 		container: f.container,
 		semaphore: f.semaphore,
-		traceSvc:  f.traceSvc,
 		stats:     f.stats,
 		conns:     f.conns,
 	}
@@ -149,16 +146,8 @@ func (f *SseHandle) registerSse(apiPath string, sseInstance sseContract.ISse, me
 		f.container.Inject(newInstance)
 		sse := newInstance.(sseContract.ISse)
 
-		// 5.1 链路追踪：为连接创建 span 并注入上下文
-		ctx := c.Request.Context()
-		if f.traceSvc != nil {
-			var span trace.Span
-			ctx, span = f.traceSvc.Start(ctx, "sse.connection", "sse.path", apiPath)
-			defer span.End()
-		}
-
 		// 1.3 心跳：带取消能力的上下文，客户端断开或心跳写入失败时取消
-		ctx, cancel := context.WithCancel(ctx)
+		ctx, cancel := context.WithCancel(c.Request.Context())
 		defer cancel()
 
 		// 设置 SSE 响应头
@@ -207,8 +196,8 @@ func (f *SseHandle) registerSse(apiPath string, sseInstance sseContract.ISse, me
 	}
 }
 
-// NewSseSvc 创建 SSE 服务处理器。traceSvc 可为 nil（不启用链路追踪）。
-func NewSseSvc(engine *gin.Engine, container ioc.IContainer, traceSvc trace.ITrace) sseContract.ISseHandle {
+// NewSseSvc 创建 SSE 服务处理器。
+func NewSseSvc(engine *gin.Engine, container ioc.IContainer) sseContract.ISseHandle {
 	if container == nil {
 		panic("ioc: 注入容器不能为空")
 	}
@@ -216,7 +205,6 @@ func NewSseSvc(engine *gin.Engine, container ioc.IContainer, traceSvc trace.ITra
 		engine:    engine,
 		group:     &engine.RouterGroup,
 		container: container,
-		traceSvc:  traceSvc,
 		stats:     &sseStats{},
 		conns:     &connTable{conns: make(map[*sseWriter]struct{})},
 		semaphore: make(chan struct{}, defaultMaxConnections),
