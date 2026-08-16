@@ -1,6 +1,7 @@
 package sse
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -141,4 +142,39 @@ func TestSseErrorFrame(t *testing.T) {
 
 	assert.Contains(t, string(body), "event: error")
 	assert.Contains(t, string(body), "test error")
+}
+
+func TestSseHeartbeat(t *testing.T) {
+	// 缩短心跳间隔，避免测试等待 30s
+	old := heartbeatInterval
+	heartbeatInterval = 30 * time.Millisecond
+	defer func() { heartbeatInterval = old }()
+
+	handle, engine := newTestHandle(1)
+	handle.Get("/sse", &blockingSse{})
+	server := httptest.NewServer(engine)
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/sse", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	lineCh := make(chan string, 1)
+	go func() {
+		reader := bufio.NewReader(resp.Body)
+		line, _ := reader.ReadString('\n')
+		lineCh <- line
+	}()
+
+	select {
+	case line := <-lineCh:
+		assert.Contains(t, line, ": heartbeat")
+	case <-time.After(2 * time.Second):
+		t.Fatal("未在超时内收到心跳帧")
+	}
+
+	handle.Shutdown()
+	waitInactive(handle)
 }

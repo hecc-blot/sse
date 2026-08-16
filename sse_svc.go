@@ -22,9 +22,11 @@ import (
 const (
 	// defaultMaxConnections 默认最大并发 SSE 连接数。
 	defaultMaxConnections = 1000
-	// heartbeatInterval 心跳间隔，用于检测客户端静默断开。
-	heartbeatInterval = 30 * time.Second
 )
+
+// heartbeatInterval 心跳间隔，用于检测客户端静默断开。
+// 用 var 而非 const，便于测试中缩短间隔。
+var heartbeatInterval = 30 * time.Second
 
 // SseHandle SSE 服务处理器，与 API 共享 gin.Engine。
 type SseHandle struct {
