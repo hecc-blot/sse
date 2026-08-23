@@ -30,10 +30,10 @@ github.com/goccy/go-yaml v1.19.2/go.mod h1:XBurs7gK8ATbW4ZPGKgcbrY1Br56PdM69F7Lk
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/google/gofuzz v1.0.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
-github.com/hecc-blot/hecc-blot-core v0.1.0 h1:gmZWH1u09jYFQMyMA88Aow2gUQWbdBeiI+6cVbdwqVw=
-github.com/hecc-blot/hecc-blot-core v0.1.0/go.mod h1:Z1U1mAGiw4xrLxmaE2NNRPrDnv4sp4NI5PoJcFACxFw=
-github.com/hecc-blot/hecc-blot-ioc v0.1.0 h1:oV4vE4yhI+wk35yJBIhrurbyNJ4eAdTDczrscsnbpu0=
-github.com/hecc-blot/hecc-blot-ioc v0.1.0/go.mod h1:1B3U+FL06yP9tdx8APmUpqrlI9J5jZIv4KQO6xc8kxs=
+github.com/hecc-blot/core v0.1.0 h1:pCaKf0QXBIkKzK6uvS8A++nGvD4EahPfPF0ruJQ14hE=
+github.com/hecc-blot/core v0.1.0/go.mod h1:70erjPZL9ibxO8On0pEESdcGGX3g8HxfetR5qks5N0I=
+github.com/hecc-blot/ioc v0.1.0 h1:c7+moUiQP6/JXHtr3bRoyolnqbgwcTgIaDx6ZSjp1Es=
+github.com/hecc-blot/ioc v0.1.0/go.mod h1:Jm5jESjnx//mVrAPTf2KZCILw/4cPmaZHuovcnErquw=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
 github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
 github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzhA9Y=

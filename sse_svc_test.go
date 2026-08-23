@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	sseContract "github.com/hecc-blot/hecc-blot-sse/contract"
-	"github.com/hecc-blot/hecc-blot-ioc/mocks"
+	sseContract "github.com/hecc-blot/sse/contract"
+	"github.com/hecc-blot/ioc/mocks"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 )

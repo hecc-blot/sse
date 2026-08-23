@@ -11,11 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	iCoreApi "github.com/hecc-blot/hecc-blot-core/contract/api"
-	sseContract "github.com/hecc-blot/hecc-blot-sse/contract"
+	iCoreApi "github.com/hecc-blot/core/contract/api"
+	sseContract "github.com/hecc-blot/sse/contract"
 
-	"github.com/hecc-blot/hecc-blot-core/contract/ioc"
-	sseutil "github.com/hecc-blot/hecc-blot-sse/util"
+	"github.com/hecc-blot/core/contract/ioc"
+	sseutil "github.com/hecc-blot/sse/util"
 	"github.com/gin-gonic/gin"
 )
 

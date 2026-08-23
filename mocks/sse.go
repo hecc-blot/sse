@@ -3,7 +3,7 @@ package mocks
 import (
 	"context"
 
-	"github.com/hecc-blot/hecc-blot-sse/contract"
+	"github.com/hecc-blot/sse/contract"
 )
 
 // MockWriter 是 Writer 接口的 mock 实现，记录最后一次 Send 的帧内容。

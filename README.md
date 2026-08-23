@@ -5,7 +5,7 @@ Server-Sent Events 推送：与 API 共享端口，内置心跳 / 连接限流 /
 ## 安装
 
 ```bash
-go get github.com/hecc-blot/hecc-blot-sse
+go get github.com/hecc-blot/sse
 ```
 
 ## 说明
