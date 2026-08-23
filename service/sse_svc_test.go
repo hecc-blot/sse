@@ -1,4 +1,4 @@
-package sse
+package service
 
 import (
 	"bufio"
@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
-	sseContract "github.com/hecc-blot/sse/contract"
-	"github.com/hecc-blot/ioc/mocks"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+
+	mocks "github.com/hecc-blot/framework/mocks/ioc"
+	sseContract "github.com/hecc-blot/sse/contract"
 )
 
 // blockingSse 阻塞直到连接关闭，用于模拟长连接。

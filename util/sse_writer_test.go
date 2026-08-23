@@ -11,9 +11,9 @@ import (
 // TestWriteSSE 验证 SSE 事件帧的组装格式，id/event/data 可缺省，末尾固定一个空行。
 func TestWriteSSE(t *testing.T) {
 	tests := []struct {
-		name         string
+		name          string
 		id, evt, data string
-		want         string
+		want          string
 	}{
 		{"全空", "", "", "", "\n"},
 		{"仅 id", "1", "", "", "id: 1\n\n"},

@@ -1,6 +1,6 @@
 package sse
 
-import iCoreApi "github.com/hecc-blot/core/contract/api"
+import iCoreApi "github.com/hecc-blot/framework/contract/api"
 
 type ISseHandle interface {
 	Get(apiPath string, sse ISse)

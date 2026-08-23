@@ -1,4 +1,4 @@
-package sse
+package service
 
 import (
 	"bytes"
@@ -11,12 +11,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	iCoreApi "github.com/hecc-blot/core/contract/api"
+	iCoreApi "github.com/hecc-blot/framework/contract/api"
 	sseContract "github.com/hecc-blot/sse/contract"
 
-	"github.com/hecc-blot/core/contract/ioc"
-	sseutil "github.com/hecc-blot/sse/util"
 	"github.com/gin-gonic/gin"
+
+	"github.com/hecc-blot/framework/contract/ioc"
+	sseutil "github.com/hecc-blot/sse/util"
 )
 
 const (
