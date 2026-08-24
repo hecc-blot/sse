@@ -7,8 +7,6 @@ require (
 	github.com/stretchr/testify v1.11.1
 )
 
-require github.com/rogpeppe/go-internal v1.14.1 // indirect
-
 require (
 	github.com/bytedance/gopkg v0.1.4 // indirect
 	github.com/bytedance/sonic v1.15.1 // indirect
@@ -22,7 +20,7 @@ require (
 	github.com/go-playground/validator/v10 v10.30.2 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
-	github.com/hecc-blot/framework v0.0.0-20260823164826-ad664e136852
+	github.com/hecc-blot/framework v0.1.2
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
