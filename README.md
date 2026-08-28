@@ -50,8 +50,8 @@ import (
 // 创建 API 处理器
 apiHandle := httpSvc.NewApiSvc(&config.Server, responseSvc, container)
 
-// 创建 SSE 处理器，共享 API 的 Engine
-sseHandle := sse.NewSseSvc(apiHandle.Engine(), container)
+// 创建 SSE 处理器，复用 API 的路由注册
+sseHandle := sse.NewSseSvc(apiHandle, container)
 
 // 启动服务（仅 API 调用 Listen，SSE 共享同一端口）
 apiHandle.Listen(sseHandle.Shutdown)
@@ -133,8 +133,8 @@ func main() {
     apiHandle.Middleware(&TokenMiddleware{})
     apiHandle.Post("example/api", &ExampleApi{})
 
-    // 注册 SSE 路由（共享 Engine）
-    sseHandle := sse.NewSseSvc(apiHandle.Engine(), container)
+    // 注册 SSE 路由（复用 API 路由注册）
+    sseHandle := sse.NewSseSvc(apiHandle, container)
     sseHandle.Middleware(&TokenMiddleware{})
     sseHandle.Get("example/sse", &ExampleSse{})
 

@@ -10,10 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 
+	serverConfig "github.com/hecc-blot/framework/config/http"
+	envEnum "github.com/hecc-blot/framework/enum/env"
 	mocks "github.com/hecc-blot/framework/mocks/ioc"
+	httpSvc "github.com/hecc-blot/framework/service/http"
 	sseContract "github.com/hecc-blot/sse/contract"
 )
 
@@ -33,18 +35,21 @@ func (e errorSse) Serve(ctx context.Context, w sseContract.Writer) error {
 }
 
 // newTestHandle 直接构造 SseHandle，便于设置小的连接数上限。
-func newTestHandle(maxConns int) (*SseHandle, *gin.Engine) {
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
+// 底层引擎复用框架 ApiHandle，供 httptest.NewServer 挂载。
+func newTestHandle(maxConns int) (*SseHandle, http.Handler) {
+	apiHandle := httpSvc.NewApiSvc(
+		&serverConfig.Config{Env: envEnum.TestMode},
+		httpSvc.NewResponseSvc(),
+		&mocks.MockContainer{},
+	)
 	handle := &SseHandle{
-		engine:    engine,
-		group:     &engine.RouterGroup,
+		handle:    apiHandle,
 		container: &mocks.MockContainer{},
 		semaphore: make(chan struct{}, maxConns),
 		stats:     &sseStats{},
 		conns:     &connTable{conns: make(map[*sseWriter]struct{})},
 	}
-	return handle, engine
+	return handle, apiHandle.(*httpSvc.ApiHandle).Engine()
 }
 
 // waitActive 等待活跃连接数达到期望值。

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"reflect"
 	"sync"
@@ -12,11 +11,8 @@ import (
 	"time"
 
 	iCoreApi "github.com/hecc-blot/framework/contract/api"
-	sseContract "github.com/hecc-blot/sse/contract"
-
-	"github.com/gin-gonic/gin"
-
 	"github.com/hecc-blot/framework/contract/ioc"
+	sseContract "github.com/hecc-blot/sse/contract"
 	sseutil "github.com/hecc-blot/sse/util"
 )
 
@@ -29,10 +25,9 @@ const (
 // 用 var 而非 const，便于测试中缩短间隔。
 var heartbeatInterval = 30 * time.Second
 
-// SseHandle SSE 服务处理器，与 API 共享 gin.Engine。
+// SseHandle SSE 服务处理器，复用框架 IApiHandle 注册路由，不感知具体 HTTP 内核。
 type SseHandle struct {
-	engine    *gin.Engine
-	group     *gin.RouterGroup
+	handle    iCoreApi.IApiHandle
 	container ioc.IContainer
 	semaphore chan struct{} // 连接信号量，限制并发连接数
 	stats     *sseStats
@@ -52,25 +47,16 @@ type connTable struct {
 	conns map[*sseWriter]struct{}
 }
 
-// Middleware 注册 SSE 分组中间件，Middleware() 方法自动完成依赖注入。
+// Middleware 注册 SSE 分组中间件，由框架 IApiHandle 完成依赖注入与挂载。
 func (f *SseHandle) Middleware(middlewares ...iCoreApi.IMiddleware) sseContract.ISseHandle {
-	for _, iMiddleware := range middlewares {
-		f.container.Inject(iMiddleware)
-
-		middlewareValue := iMiddleware.Middleware()
-		if middlewareValue != nil && reflect.TypeOf(middlewareValue).Kind() == reflect.Func {
-			f.group.Use(middlewareValue.(func(*gin.Context)))
-		}
-	}
-
+	f.handle.Middleware(middlewares...)
 	return f
 }
 
 // Group 创建 SSE 路由分组，分组内的中间件仅作用于该分组。
 func (f *SseHandle) Group(relativePath string, middlewares ...iCoreApi.IMiddleware) sseContract.ISseHandle {
 	group := &SseHandle{
-		engine:    f.engine,
-		group:     f.group.Group(relativePath),
+		handle:    f.handle.Group(relativePath),
 		container: f.container,
 		semaphore: f.semaphore,
 		stats:     f.stats,
@@ -119,11 +105,11 @@ func (f *SseHandle) registerSse(apiPath string, sseInstance sseContract.ISse, me
 	f.container.Inject(sseInstance)
 	sseType := reflect.TypeOf(sseInstance).Elem()
 
-	handler := func(c *gin.Context) {
+	handler := func(w http.ResponseWriter, r *http.Request) {
 		// 1.4 http.Flusher 断言：不支持流式写入返回 500
-		flusher, ok := c.Writer.(http.Flusher)
+		flusher, ok := w.(http.Flusher)
 		if !ok {
-			c.String(http.StatusInternalServerError, "streaming unsupported")
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 			return
 		}
 
@@ -132,7 +118,7 @@ func (f *SseHandle) registerSse(apiPath string, sseInstance sseContract.ISse, me
 		case f.semaphore <- struct{}{}:
 			defer func() { <-f.semaphore }()
 		default:
-			c.String(http.StatusServiceUnavailable, "too many connections")
+			http.Error(w, "too many connections", http.StatusServiceUnavailable)
 			return
 		}
 
@@ -150,21 +136,21 @@ func (f *SseHandle) registerSse(apiPath string, sseInstance sseContract.ISse, me
 		sse := newInstance.(sseContract.ISse)
 
 		// 1.3 心跳：带取消能力的上下文，客户端断开或心跳写入失败时取消
-		ctx, cancel := context.WithCancel(c.Request.Context())
+		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 
 		// 设置 SSE 响应头
-		c.Writer.Header().Set("Content-Type", "text/event-stream")
-		c.Writer.Header().Set("Cache-Control", "no-cache")
-		c.Writer.Header().Set("Connection", "keep-alive")
-		c.Writer.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
 		flusher.Flush()
 
 		// 1.7 构造写入抽象，暴露 Last-Event-Id 供业务做断线续传
 		writer := &sseWriter{
-			writer:      c.Writer,
+			writer:      w,
 			flusher:     flusher,
-			lastEventID: c.GetHeader("Last-Event-Id"),
+			lastEventID: r.Header.Get("Last-Event-Id"),
 			ctx:         ctx,
 			cancel:      cancel,
 		}
@@ -189,24 +175,16 @@ func (f *SseHandle) registerSse(apiPath string, sseInstance sseContract.ISse, me
 		}
 	}
 
-	switch method {
-	case http.MethodGet:
-		f.group.GET(apiPath, handler)
-	case http.MethodPost:
-		f.group.POST(apiPath, handler)
-	default:
-		panic(fmt.Sprintf("无效http请求类型，%s", method))
-	}
+	f.handle.Handle(method, apiPath, http.HandlerFunc(handler))
 }
 
-// NewSseSvc 创建 SSE 服务处理器。
-func NewSseSvc(engine *gin.Engine, container ioc.IContainer) sseContract.ISseHandle {
+// NewSseSvc 创建 SSE 服务处理器，复用框架 IApiHandle 注册路由。
+func NewSseSvc(handle iCoreApi.IApiHandle, container ioc.IContainer) sseContract.ISseHandle {
 	if container == nil {
 		panic("ioc: 注入容器不能为空")
 	}
 	return &SseHandle{
-		engine:    engine,
-		group:     &engine.RouterGroup,
+		handle:    handle,
 		container: container,
 		stats:     &sseStats{},
 		conns:     &connTable{conns: make(map[*sseWriter]struct{})},
