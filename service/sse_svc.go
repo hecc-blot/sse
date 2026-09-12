@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hecc-blot/core/contract/ioc"
 	iCoreApi "github.com/hecc-blot/framework/contract/api"
-	"github.com/hecc-blot/framework/contract/ioc"
 	sseContract "github.com/hecc-blot/sse/contract"
 	sseutil "github.com/hecc-blot/sse/util"
 )
