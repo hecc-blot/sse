@@ -1,6 +1,6 @@
 # hecc-blot-sse
 
-Server-Sent Events 推送：与 API 共享端口，内置心跳 / 连接限流 / 错误帧 / 优雅关闭。
+SSE（Server-Sent Events）推送模块：与 API 共享端口，框架封装连接管理、心跳、限流与优雅关闭。
 
 ## 安装
 
@@ -8,161 +8,216 @@ Server-Sent Events 推送：与 API 共享端口，内置心跳 / 连接限流 /
 go get github.com/hecc-blot/sse
 ```
 
-## 接口定义
-
-```go
-// sse/contract/sse.go
-type ISse interface {
-    Serve(ctx context.Context, w Writer) error
-}
-
-// Writer SSE 写入抽象，由框架实现并注入给业务
-type Writer interface {
-    Send(id, event, data string) error
-    LastEventID() string
-}
-
-// sse/contract/sse_handler.go
-type ISseHandle interface {
-    Get(apiPath string, sse ISse)
-    Post(apiPath string, sse ISse)
-    Middleware(middlewares ...iCoreApi.IMiddleware) ISseHandle
-    Group(relativePath string, middlewares ...iCoreApi.IMiddleware) ISseHandle
-    Stats() Stats
-    Shutdown()
-}
-```
-
-SSE 复用 `framework/contract/api` 中的 `IMiddleware` 接口，无需单独定义中间件接口。
-
-框架在底层封装了 `http.Flusher` 断言、心跳保活、并发锁、连接数上限与错误帧格式化，业务只需通过 `Writer` 写入、通过 `ctx` 感知连接断开。策略性校验（如 `Accept` 头）建议通过中间件实现。
-
-## 初始化
-
-SSE 服务与 API 服务共享 Engine，创建时传入 API 的 Engine：
+## 快速开始
 
 ```go
 import (
-    httpSvc "github.com/hecc-blot/framework/service/http"
-    sse "github.com/hecc-blot/sse/service"
+	"context"
+	"fmt"
+	"time"
+
+	logContract "github.com/hecc-blot/core/contract/log"
+	ioc "github.com/hecc-blot/core/service/ioc"
+	httpSvc "github.com/hecc-blot/framework/service/http"
+	sseContract "github.com/hecc-blot/sse/contract"
+	sse "github.com/hecc-blot/sse/service"
 )
 
-// 创建 API 处理器
-apiHandle := httpSvc.NewApiSvc(&config.Server, responseSvc, container)
+type TimeSse struct {
+	LogSvc logContract.ILog `inject:""`
+}
 
-// 创建 SSE 处理器，复用 API 的路由注册
-sseHandle := sse.NewSseSvc(apiHandle, container)
+func (s *TimeSse) Serve(ctx context.Context, w sseContract.Writer) error {
+	s.LogSvc.Info(ctx, "sse connected")
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
 
-// 启动服务（仅 API 调用 Listen，SSE 共享同一端口）
-apiHandle.Listen(sseHandle.Shutdown)
+	for {
+		select {
+		case <-ctx.Done(): // 客户端断开或服务关闭
+			return nil
+		case <-ticker.C:
+			if err := w.Send("", "", fmt.Sprintf("now: %s", time.Now().Format(time.RFC3339))); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func main() {
+	// 1. HTTP 内核（SSE 复用它，不另起端口）
+	container := ioc.New()
+	container.Set(new(logContract.ILog), logSvc)
+	apiHandle := httpSvc.NewApiSvc(&config.Server, httpSvc.NewResponseSvc(), container)
+
+	// 2. SSE 句柄
+	sseHandle := sse.NewSseSvc(apiHandle, container)
+
+	// 3. 注册端点
+	sseHandle.Get("events/time", &TimeSse{})
+
+	// 4. 把优雅关闭挂到 HTTP 的退出链上
+	apiHandle.Listen(sseHandle.Shutdown)
+}
 ```
 
-## 定义 SSE 端点
+完整的应用组装顺序见[组织主页](https://github.com/hecc-blot)。
 
-实现 `ISse` 接口：
+## 接口定义
 
 ```go
-type ExampleSse struct {
-    LogSvc logContract.ILog `inject:""`
+import (
+	"context"
+
+	iCoreApi "github.com/hecc-blot/framework/contract/api"
+	sseContract "github.com/hecc-blot/sse/contract"
+)
+
+// 业务实现 Serve 编写推送逻辑
+type ISse interface {
+	// ctx 带取消能力：客户端断开或心跳失败时被取消，业务应在循环里 select ctx.Done() 退出
+	Serve(ctx context.Context, w Writer) error
 }
 
-func (e ExampleSse) Serve(ctx context.Context, w sseContract.Writer) error {
-    e.LogSvc.Info(ctx, "sse start")
+// 框架注入给业务的写入抽象
+type Writer interface {
+	Send(id, event, data string) error // id/event 可为空
+	LastEventID() string               // 客户端重连时携带的 Last-Event-Id，用于断线续传
+}
 
-    ticker := time.NewTicker(1 * time.Second)
-    defer ticker.Stop()
+type ISseHandle interface {
+	Get(apiPath string, sse ISse)
+	Post(apiPath string, sse ISse)
+	Middleware(middlewares ...iCoreApi.IMiddleware) ISseHandle
+	Group(relativePath string, middlewares ...iCoreApi.IMiddleware) ISseHandle
+	Stats() Stats
+	Shutdown()
+}
 
-    for {
-        select {
-        case <-ctx.Done():
-            // 客户端断开或心跳写入失败
-            return nil
-        case <-ticker.C:
-            msg := fmt.Sprintf("当前服务器时间：%s", time.Now().Format(time.RFC3339))
-            if err := w.Send("", "", msg); err != nil {
-                return err
-            }
-        }
-    }
+type Stats struct {
+	Active int64 // 当前活跃连接数
+	Total  int64 // 历史连接总数
+	Closed int64 // 已关闭连接数
 }
 ```
 
-## 注册路由
+## 使用
+
+### 定义 SSE 端点
 
 ```go
-func registerSse(sseHandle sseContract.ISseHandle) {
-    sseHandle.Middleware(&TokenMiddleware{})
-    sseHandle.Get("example/sse", &ExampleSse{})
+type TimeSse struct {
+	LogSvc logContract.ILog `inject:""` // 注入字段在前
+}
+
+func (s *TimeSse) Serve(ctx context.Context, w sseContract.Writer) error {
+	// 断线续传：客户端带上 Last-Event-Id 时可以从上次的位置继续
+	last := w.LastEventID()
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := w.Send("", "", "data"); err != nil {
+				return err
+			}
+		}
+	}
 }
 ```
+
+### 注册路由
+
+```go
+// 直接注册
+sseHandle.Get("events/time", &TimeSse{})
+sseHandle.Post("events/time", &TimeSse{}) // fetch + ReadableStream 用法
+sseHandle.Handle(...)                     // ❌ 无此方法；需原生 handler 请用 apiHandle.Handle
+```
+
+> 一个 SSE 端点同时注册 `Get` 与 `Post`：`EventSource` 只能发 GET，前端用 `fetch` + `ReadableStream` 时走 POST。
+
+### 分组与中间件
+
+```go
+// 分组：中间件只作用于本组
+sseGroup := sseHandle.Group("admin", &demo.SseAcceptMiddleware{})
+sseGroup.Get("events/order", &OrderSse{})
+```
+
+> ⚠️ **`sseHandle.Middleware(...)` 是全局中间件**。它内部直接挂到 HTTP 内核的**根 group** 上，会作用于**全部 API 路由**，而不只是 SSE 路由。只想作用于 SSE 就用 `Group()`。
+>
+> 示例里常见「同一个 Token 中间件同时挂在 `apiHandle` 和 `sseHandle`」，那是重复注册，没必要。
 
 ### 请求处理流程
 
 ```
-请求 → [中间件链] → [Flusher 断言] → [连接数限流] → [设置SSE响应头] → [Serve()] → [持续推送事件]
-                                                                              ↓
-                                                                   客户端断开 / 心跳失败 / Serve 返回 error
-                                                                              ↓
-                                                               发送 error SSE 事件（JSON）→ 结束
+GET /events/time
+  ├─ 断言 http.Flusher（失败 → 500）
+  ├─ 连接数限流（超过上限 → 503）
+  ├─ Stats 计数 +1
+  ├─ reflect.New 创建独立实例并 Inject 依赖
+  ├─ POST 请求时校验 Accept 头
+  ├─ 启动心跳 goroutine（每 30s 一条 SSE comment）
+  ├─ 注册到连接表（供 Shutdown 通知）
+  └─ sse.Serve(ctx, writer)
 ```
 
 ### 框架自动处理的能力
 
-- **实例隔离**：每个连接创建独立业务实例，避免并发共享
-- **连接数上限**：超出上限返回 503
-- **心跳保活**：每 30s 发送 SSE comment，写入失败自动取消连接
-- **Flusher 断言**：Writer 不支持流式时返回 500
-- **Last-Event-Id**：提取请求头，通过 `w.LastEventID()` 暴露给业务做断线续传
-- **连接统计**：`Stats()` 返回活跃/总数/断开连接数
-- **优雅关闭**：`Shutdown()` 通知所有活跃连接发送 shutdown 帧后断开，配合 `apiHandle.Listen(sseHandle.Shutdown)` 使用
-- **链路追踪**：传入 trace 中间件后为连接创建 `sse.connection` span
-- **帧写入工具**：`sse/util` 提供 `WriteSSE(w, id, event, data)` 辅助方法
+| 能力 | 说明 |
+|------|------|
+| Flusher 断言 | 写客户端不支持流式时返回 500 |
+| 心跳 | 每 30s 发送一条 SSE comment，防中间层断连 |
+| Accept 校验 | POST 请求校验 `Accept: text/event-stream` |
+| 连接限流 | 并发连接上限 **1000**（硬编码，不可配置），超出返回 503 |
+| 优雅关闭 | `Shutdown()` 向所有活跃连接发送 `shutdown` 帧并取消 |
+| 错误帧 | `Serve` 返回 error 时发送一条 `event: error` 的 JSON 帧 |
 
-## 完整示例
+### 错误处理
 
-```go
-func main() {
-    // ... 初始化日志、数据库、缓存、IOC 注册 ...
+`Serve` 返回 error 时，框架会先写一条错误帧，**然后结束该连接**：
 
-    container := ioc.New()
-    // ... container.Set(...) ...
-
-    apiHandle := httpSvc.NewApiSvc(&config.Server, responseSvc, container)
-
-    // 注册 API 路由
-    apiHandle.Middleware(&TokenMiddleware{})
-    apiHandle.Post("example/api", &ExampleApi{})
-
-    // 注册 SSE 路由（复用 API 路由注册）
-    sseHandle := sse.NewSseSvc(apiHandle, container)
-    sseHandle.Middleware(&TokenMiddleware{})
-    sseHandle.Get("example/sse", &ExampleSse{})
-
-    // 启动服务
-    apiHandle.Listen(sseHandle.Shutdown)
-}
-```
-
-## 错误处理
-
-Serve 返回 error 时，框架以 JSON 格式发送 SSE `error` 事件，不会中断流连接：
-
-```
+```json
 event: error
 data: {"code":"500","message":"..."}
 ```
 
-## 注意事项
+> 注意：**连接会被关闭**，不是「继续推送」。错误帧的 `code` 目前恒为字符串 `"500"`。
 
-1. **共享端口**：SSE 与 API 共用同一 Gin Engine，只需调用 `apiHandle.Listen()` 一次
-2. **长连接**：SSE 连接一直保持直到客户端断开或心跳失败，Serve 方法监听 `ctx.Done()` 感知断开
-3. **写入**：业务通过 `w.Send()` 写入，框架自动 Flush 并保证并发安全
-4. **中间件复用**：SSE 中间件与 API 中间件共用 `IMiddleware` 接口
-5. **依赖注入**：与 API 一样，SSE 实例通过 IOC 自动注入依赖
+### 优雅关闭
+
+```go
+apiHandle.Listen(sseHandle.Shutdown)
+```
+
+`Listen` 收到退出信号后会**先执行 `onShutdown` 钩子**（即 `Shutdown`），把所有 SSE 连接通知完毕，再以 5s 超时关闭 HTTP 服务。
+
+## 语义与约定
+
+- **每个连接一个实例**：框架对每个连接 `reflect.New` 出独立的 `ISse` 实例并重新注入依赖，因此**不要在注入字段上保存连接态数据**。
+- **`NewSseSvc` 的 `container` 为 nil 会 panic**；`handle` 也不能为 nil。
+- **`Writer.Send` 并发安全**：框架内部封装了并发写入保护，但同一个连接上 `Send` 是顺序写出的，不要跨 goroutine 并发调用。
+- **无背压**：生产速度超过消费速度时，TCP 缓冲区写满会让 `Send` 阻塞（`feature.md` 已列为待实现项）。
+- **无释放语义**：`NewSseSvc` 不返回 cleanup，连接随进程退出回收。
+
+## 测试与 mock
+
+```go
+import "github.com/hecc-blot/sse/mocks"
+
+mockWriter := &mocks.MockWriter{} // 记录 Send 的内容，便于断言
+mockSse := &mocks.MockSse{}       // ServeFn 定制行为
+```
 
 ## 相关模块
 
 | 模块 | 说明 |
 |------|------|
-| [framework](https://github.com/hecc-blot/framework) | 路由与中间件复用、`IMiddleware` 接口 |
-| [trace](https://github.com/hecc-blot/trace) | `SseTraceMiddleware` 连接追踪 |
+| [core](https://github.com/hecc-blot/core) | `ioc.IContainer` 依赖注入、`log.ILog` 日志契约 |
+| [framework](https://github.com/hecc-blot/framework) | HTTP 内核与 `IMiddleware`；SSE 复用同一端口 |
+| [trace](https://github.com/hecc-blot/trace) | `NewSseMiddleware` 提供每个连接的 span |
+| [metrics](https://github.com/hecc-blot/metrics) | 连接数等指标的来源（`Stats()`） |
