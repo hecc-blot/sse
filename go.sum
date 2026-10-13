@@ -31,10 +31,10 @@ github.com/goccy/go-yaml v1.19.2/go.mod h1:XBurs7gK8ATbW4ZPGKgcbrY1Br56PdM69F7Lk
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/google/gofuzz v1.0.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
-github.com/hecc-blot/core v0.1.6 h1:Y0YRRiN4acAIrDPKq1ki0GH6aNOvGBy2QWe+18OFGw4=
-github.com/hecc-blot/core v0.1.6/go.mod h1:Nlw9oi5mvVJSjkE9LXCnGTTXgOTvYKdREYrEddoVXVE=
-github.com/hecc-blot/framework v0.2.0 h1:+YKSEy4KRnObIxWCmUiTdh++dOx/DyjwEtMoK1fkpcI=
-github.com/hecc-blot/framework v0.2.0/go.mod h1:5Z6Wkhn/bJ1zbm2v2K4wa+rHw/n80ZB+OJG/QM+XAKI=
+github.com/hecc-blot/core v0.4.0 h1:uEymb5QOvegt8rX9jqhVHSlclT7IYBLTxWq0Bp8xt/s=
+github.com/hecc-blot/core v0.4.0/go.mod h1:Xsk1/XczfArgWfA19rSw3mm89LZy7pOxVXxmzuCq6v0=
+github.com/hecc-blot/framework v0.3.0 h1:kahKLmyjVp0RPvwnYkmRPv4eD/2OEeuP+/gQQEgkRHE=
+github.com/hecc-blot/framework v0.3.0/go.mod h1:nRrhoB8naqfwS+qK4S9MY/A09LFyDUJ3HvtDwezRAHA=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
 github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
 github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzhA9Y=

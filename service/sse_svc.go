@@ -139,6 +139,18 @@ func (f *SseHandle) registerSse(apiPath string, sseInstance sseContract.ISse, me
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 
+		// 清掉框架按 WriteTimeout 设下的写 deadline。
+		//
+		// net/http 在读完请求头时**一次性**把连接的写 deadline 设为 now+WriteTimeout，
+		// 这是绝对时间点，Flush() 不会顺延 —— 于是长连接会准时在 WriteTimeout 那一刻
+		// 静默断流（无 shutdown 帧、无 error 事件，业务也不知道自己写的帧没送达）。
+		// SSE 靠心跳维持连接，语义上就不该有写超时；设成零值即不设 deadline。
+		//
+		// 用 ResponseController 而非类型断言：到这里 w 已经是 gin 的 responseWriter，
+		// 经 Unwrap() 链能拿到底层 http.ResponseWriter；不支持时返回 error，忽略即可
+		// （此时退回框架配置的行为，不会比现在更差）。
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+
 		// 设置 SSE 响应头
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -181,15 +193,26 @@ func (f *SseHandle) registerSse(apiPath string, sseInstance sseContract.ISse, me
 // NewSseSvc 创建 SSE 服务处理器，复用框架 IApiHandle 注册路由。
 func NewSseSvc(handle iCoreApi.IApiHandle, container ioc.IContainer) sseContract.ISseHandle {
 	if container == nil {
-		panic("ioc: 注入容器不能为空")
+		panic("ioc: container must not be nil")
 	}
-	return &SseHandle{
+	f := &SseHandle{
 		handle:    handle,
 		container: container,
 		stats:     &sseStats{},
 		conns:     &connTable{conns: make(map[*sseWriter]struct{})},
 		semaphore: make(chan struct{}, defaultMaxConnections),
 	}
+
+	// 构造时自注册关闭钩子，把 Shutdown 托给框架的停机流程。
+	//
+	// 放在构造处而不是每个路由注册点：conns 表由分组共享，一次注册即可；
+	// 若在每个 Get/Post 里注册，多路由就会注册多份（框架无法对钩子去重），
+	// 停机时同一批连接会被反复通知。
+	// 业务侧因此不必再写 Listen(sseHandle.Shutdown) —— 忘了那一步的后果是
+	// 客户端静默突然断连、且不报任何错，属于"忘不掉才好"的约定。
+	handle.OnShutdown(f.Shutdown)
+
+	return f
 }
 
 // sseWriter 框架层 SSE 写入实现，封装 Flusher、并发锁、心跳与错误格式。

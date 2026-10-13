@@ -56,8 +56,8 @@ func main() {
 	// 3. 注册端点
 	sseHandle.Get("events/time", &TimeSse{})
 
-	// 4. 把优雅关闭挂到 HTTP 的退出链上
-	apiHandle.Listen(sseHandle.Shutdown)
+	// 4. 启动（阻塞）。SSE 已在 NewSseSvc 里把自己注册进停机流程，无需手工传钩子
+	apiHandle.Listen()
 }
 ```
 
@@ -191,10 +191,12 @@ data: {"code":"500","message":"..."}
 ### 优雅关闭
 
 ```go
-apiHandle.Listen(sseHandle.Shutdown)
+apiHandle.Listen() // 无需传参：NewSseSvc 已在构造时注册好关闭钩子
 ```
 
-`Listen` 收到退出信号后会**先执行 `onShutdown` 钩子**（即 `Shutdown`），把所有 SSE 连接通知完毕，再以 5s 超时关闭 HTTP 服务。
+`NewSseSvc` 会调用 `apiHandle.OnShutdown(sseHandle.Shutdown)`，把自己托进框架的停机流程：`Listen` 收到退出信号后**先执行关闭钩子**，把所有 SSE 连接通知（`shutdown` 帧 + 取消连接）完毕，再以 5s 超时关闭 HTTP 服务。
+
+这个顺序是承重的：`http.Server.Shutdown` 只等活跃连接变 idle，而 SSE 长连接永远不会自己变 idle —— 没有钩子就会干等到超时，客户端只能突然断连。之所以改成自注册，是因为旧写法 `Listen(sseHandle.Shutdown)` 一旦忘了传就**静默**出现这个问题，且不报任何错。
 
 ## 语义与约定
 
@@ -202,6 +204,7 @@ apiHandle.Listen(sseHandle.Shutdown)
 - **`NewSseSvc` 的 `container` 为 nil 会 panic**；`handle` 也不能为 nil。
 - **`Writer.Send` 并发安全**：框架内部封装了并发写入保护，但同一个连接上 `Send` 是顺序写出的，不要跨 goroutine 并发调用。
 - **无背压**：生产速度超过消费速度时，TCP 缓冲区写满会让 `Send` 阻塞（`feature.md` 已列为待实现项）。
+- **写超时已被 handler 自行清除**：框架按 `write_timeout` 设下的写 deadline 是**绝对**时间点（`net/http` 在读完请求头时一次性设定，`Flush()` 不会顺延），长连接会准时在该时刻静默断流 —— handler 内已用 `http.NewResponseController(w).SetWriteDeadline(time.Time{})` 清掉它，因此**SSE 不受 `write_timeout` 限制**（回归用例 `TestStreamSurvivesWriteTimeout` 钉住这一点）。
 - **无释放语义**：`NewSseSvc` 不返回 cleanup，连接随进程退出回收。
 
 ## 测试与 mock
