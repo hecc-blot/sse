@@ -48,7 +48,9 @@ func main() {
 	// 1. HTTP 内核（SSE 复用它，不另起端口）
 	container := ioc.New()
 	container.Set(new(logContract.ILog), logSvc)
-	apiHandle := httpSvc.NewApiSvc(&config.Server, httpSvc.NewResponseSvc(), container)
+	// 只要服务里不注册 API 路由（Get/Post），就不必注入响应渲染 ——
+	// SSE 只挂原生 handler，一个只跑 SSE 的进程因此不用构造 responseSvc。
+	apiHandle := httpSvc.NewApiSvc(&config.Server, container)
 
 	// 2. SSE 句柄
 	sseHandle := sse.NewSseSvc(apiHandle, container)
@@ -81,9 +83,16 @@ type ISse interface {
 
 // 框架注入给业务的写入抽象
 type Writer interface {
-	Send(id, event, data string) error // id/event 可为空
-	LastEventID() string               // 客户端重连时携带的 Last-Event-Id，用于断线续传
+	Send(id, event, data string) error    // id/event 可为空；队满时阻塞（背压），不丢帧
+	TrySend(id, event, data string) error // 队满时丢弃该帧并返回 ErrBackpressure，不阻塞
+	LastEventID() string                  // 客户端重连时携带的 Last-Event-Id，用于断线续传
 }
+
+// 两个契约型 sentinel（带 core 码，可用 errors.Is 判断）
+var (
+	ErrBackpressure = errorcode.New(errorcode.CodeRateLimited, "sse: send buffer is full, frame dropped")
+	ErrClosed       = errorcode.New(errorcode.CodeIllegalState, "sse: connection is already closed")
+)
 
 type ISseHandle interface {
 	Get(apiPath string, sse ISse)
@@ -95,9 +104,10 @@ type ISseHandle interface {
 }
 
 type Stats struct {
-	Active int64 // 当前活跃连接数
-	Total  int64 // 历史连接总数
-	Closed int64 // 已关闭连接数
+	Active  int64 // 当前活跃连接数
+	Total   int64 // 历史连接总数
+	Closed  int64 // 已关闭连接数
+	Dropped int64 // 被丢弃的帧数（TrySend 背压丢弃 + 尽力投递的控制帧未能入队）
 }
 ```
 
@@ -161,9 +171,10 @@ GET /events/time
   ├─ Stats 计数 +1
   ├─ reflect.New 创建独立实例并 Inject 依赖
   ├─ POST 请求时校验 Accept 头
-  ├─ 启动心跳 goroutine（每 30s 一条 SSE comment）
+  ├─ 启动写 goroutine + 心跳 goroutine（每 30s 一条 SSE comment）
   ├─ 注册到连接表（供 Shutdown 通知）
   └─ sse.Serve(ctx, writer)
+       └─ 业务 Send/TrySend → 有界队列 → 写 goroutine → socket
 ```
 
 ### 框架自动处理的能力
@@ -174,7 +185,9 @@ GET /events/time
 | 心跳 | 每 30s 发送一条 SSE comment，防中间层断连 |
 | Accept 校验 | POST 请求校验 `Accept: text/event-stream` |
 | 连接限流 | 并发连接上限 **1000**（硬编码，不可配置），超出返回 503 |
-| 优雅关闭 | `Shutdown()` 向所有活跃连接发送 `shutdown` 帧并取消 |
+| 背压与丢帧 | 每连接一条有界写队列：`Send` 队满则阻塞（不丢帧），`TrySend` 队满则丢帧并报 `ErrBackpressure` |
+| 单帧写超时 | 每帧写单独设 10s deadline，客户端不读时不会永久卡住写 goroutine |
+| 优雅关闭 | `Shutdown()` 向所有活跃连接**尽力**发送 `shutdown` 帧并取消 |
 | 错误帧 | `Serve` 返回 error 时发送一条 `event: error` 的 JSON 帧 |
 
 ### 错误处理
@@ -188,13 +201,41 @@ data: {"code":"500","message":"..."}
 
 > 注意：**连接会被关闭**，不是「继续推送」。错误帧的 `code` 目前恒为字符串 `"500"`。
 
+### 背压与丢弃
+
+每个连接的帧不直接写 socket，而是进入该连接自己的**有界队列**，由每连接一个的写 goroutine 依次写出。于是慢客户端只能把队列填满，卡不住心跳，也卡不住停机钩子。
+
+| 调用 | 队满时 | 语义 |
+|------|--------|------|
+| `Send` | **阻塞**到有空位 | 背压：不丢帧，代价是拖慢业务循环 |
+| `TrySend` | **丢弃该帧**并返回 `ErrBackpressure` | 吞吐优先：由业务决定降级策略 |
+
+```go
+for ev := range events {
+	// 不能丢的帧：等（背压自然传导到上游）
+	if err := w.Send("", "order", ev); err != nil {
+		return err
+	}
+	// 可以丢的帧：丢不起就跳过，并自己计数
+	if err := w.TrySend("", "metric", m); errors.Is(err, sseContract.ErrBackpressure) {
+		dropped.Add(1)
+	}
+}
+```
+
+- **`Send` 返回 nil 只代表「已入队」，不代表「已送达」** —— 写出是异步的。连接是否还活着请看 `ctx`（客户端断开、心跳失败、写失败都会取消它）；发送侧的失败由 `ErrClosed` / `ErrBackpressure` 表达。
+- **帧序恒定**：两种调用共用同一条队列与同一个写 goroutine，顺序即调用顺序。
+- **内存有上界**：`队列深度(16) × 单帧字节 × 连接数(上限 1000)`。故业务应避免推送超大帧 —— 1KB 的帧满负载约 16MB，1MB 的帧就是 16GB。
+- **丢帧可观测**：`Stats().Dropped` 统计所有被丢弃的帧（`TrySend` 丢的 + 心跳/错误/shutdown 等尽力投递却没挤进队列的）。它持续增长说明有客户端消费跟不上。
+- **控制帧是尽力投递**：心跳、错误帧、`shutdown` 帧都走非阻塞入队，队满时会被丢掉。这不是妥协 —— 队满必然意味着对端 socket 缓冲也满了，此时它连数据帧都收不到。
+
 ### 优雅关闭
 
 ```go
 apiHandle.Listen() // 无需传参：NewSseSvc 已在构造时注册好关闭钩子
 ```
 
-`NewSseSvc` 会调用 `apiHandle.OnShutdown(sseHandle.Shutdown)`，把自己托进框架的停机流程：`Listen` 收到退出信号后**先执行关闭钩子**，把所有 SSE 连接通知（`shutdown` 帧 + 取消连接）完毕，再以 5s 超时关闭 HTTP 服务。
+`NewSseSvc` 会调用 `apiHandle.OnShutdown(sseHandle.Shutdown)`，把自己托进框架的停机流程：`Listen` 收到退出信号后**先执行关闭钩子**，向所有 SSE 连接**尽力**发送 `shutdown` 帧并取消（都走非阻塞入队，因此钩子不会被慢客户端挂住 —— 对它的意义见上「背压与丢弃」），再以 5s 超时关闭 HTTP 服务。
 
 这个顺序是承重的：`http.Server.Shutdown` 只等活跃连接变 idle，而 SSE 长连接永远不会自己变 idle —— 没有钩子就会干等到超时，客户端只能突然断连。之所以改成自注册，是因为旧写法 `Listen(sseHandle.Shutdown)` 一旦忘了传就**静默**出现这个问题，且不报任何错。
 
@@ -202,9 +243,9 @@ apiHandle.Listen() // 无需传参：NewSseSvc 已在构造时注册好关闭钩
 
 - **每个连接一个实例**：框架对每个连接 `reflect.New` 出独立的 `ISse` 实例并重新注入依赖，因此**不要在注入字段上保存连接态数据**。
 - **`NewSseSvc` 的 `container` 为 nil 会 panic**；`handle` 也不能为 nil。
-- **`Writer.Send` 并发安全**：框架内部封装了并发写入保护，但同一个连接上 `Send` 是顺序写出的，不要跨 goroutine 并发调用。
-- **无背压**：生产速度超过消费速度时，TCP 缓冲区写满会让 `Send` 阻塞（`feature.md` 已列为待实现项）。
-- **写超时已被 handler 自行清除**：框架按 `write_timeout` 设下的写 deadline 是**绝对**时间点（`net/http` 在读完请求头时一次性设定，`Flush()` 不会顺延），长连接会准时在该时刻静默断流 —— handler 内已用 `http.NewResponseController(w).SetWriteDeadline(time.Time{})` 清掉它，因此**SSE 不受 `write_timeout` 限制**（回归用例 `TestStreamSurvivesWriteTimeout` 钉住这一点）。
+- **`Writer.Send` / `TrySend` 并发安全**：帧经 channel 入队，可从多个 goroutine 调用；但跨 goroutine 的**相对顺序**不确定，需要严格有序就让同一个 goroutine 发。队满行为见上「背压与丢弃」。
+- **`Send` 不再返回 I/O 错误**：写出由写 goroutine 异步完成，写失败只会取消 `ctx`、并让后续 `Send` / `TrySend` 返回 `ErrClosed`。判断连接死活请以 `ctx` 为准（框架不承诺 `Send` 返回 nil 就等于送达）。
+- **写超时已被 handler 自行清除**：框架按 `write_timeout` 设下的写 deadline 是**绝对**时间点（`net/http` 在读完请求头时一次性设定，`Flush()` 不会顺延），长连接会准时在该时刻静默断流 —— handler 内已用 `http.NewResponseController(w).SetWriteDeadline(time.Time{})` 清掉它，因此**SSE 不受 `write_timeout` 限制**（回归用例 `TestStreamSurvivesWriteTimeout` 钉住这一点）。之后每帧写前会重设一个**单帧写超时（10s）**：它只保证一帧不会永久卡住写 goroutine，不限制连接总时长（客户端不读时该帧写超时、连接被取消）。
 - **无释放语义**：`NewSseSvc` 不返回 cleanup，连接随进程退出回收。
 
 ## 测试与 mock

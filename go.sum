@@ -33,8 +33,8 @@ github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX
 github.com/google/gofuzz v1.0.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
 github.com/hecc-blot/core v0.4.0 h1:uEymb5QOvegt8rX9jqhVHSlclT7IYBLTxWq0Bp8xt/s=
 github.com/hecc-blot/core v0.4.0/go.mod h1:Xsk1/XczfArgWfA19rSw3mm89LZy7pOxVXxmzuCq6v0=
-github.com/hecc-blot/framework v0.3.0 h1:kahKLmyjVp0RPvwnYkmRPv4eD/2OEeuP+/gQQEgkRHE=
-github.com/hecc-blot/framework v0.3.0/go.mod h1:nRrhoB8naqfwS+qK4S9MY/A09LFyDUJ3HvtDwezRAHA=
+github.com/hecc-blot/framework v0.4.0 h1:jm/r5rtAFuM0ybD2n8ueB5tjR9PcogN/lLfObhDItI8=
+github.com/hecc-blot/framework v0.4.0/go.mod h1:nRrhoB8naqfwS+qK4S9MY/A09LFyDUJ3HvtDwezRAHA=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
 github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
 github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzhA9Y=

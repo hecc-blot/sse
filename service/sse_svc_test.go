@@ -63,10 +63,12 @@ func (e errorSse) Serve(ctx context.Context, w sseContract.Writer) error {
 
 // newTestHandle 直接构造 SseHandle，便于设置小的连接数上限。
 // 底层引擎复用框架 ApiHandle，供 httptest.NewServer 挂载。
+//
+// 注意这里**不注入 responseSvc**：SSE 只挂原生 handler，内核不需要 API 的响应渲染 ——
+// 一个只跑 SSE 的服务因此不必构造它（也顺带钉住「长连接内核不需要它」这件事）。
 func newTestHandle(maxConns int) (*SseHandle, http.Handler) {
 	apiHandle := httpSvc.NewApiSvc(
 		&serverConfig.Config{Env: envEnum.TestMode},
-		httpSvc.NewResponseSvc(),
 		&mocks.MockContainer{},
 	)
 	handle := &SseHandle{
